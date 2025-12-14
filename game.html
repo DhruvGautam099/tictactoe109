@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Tic-Tac-Toe vs AI</title>
+    <style>
+        /* --- VISUAL STYLES (Same as before with minor tweaks) --- */
+        body {
+            background-color: #121212;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        h1 { margin: 0 0 10px 0; letter-spacing: 2px; font-size: 1.8rem; }
+        
+        #status-bar {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+            align-items: center;
+        }
+
+        .status-text {
+            font-size: 1.2rem;
+            font-weight: bold;
+            padding: 8px 16px;
+            border-radius: 4px;
+            background: #2a2a2a;
+            border: 1px solid #444;
+            min-width: 150px;
+            text-align: center;
+        }
+
+        /* 3D SCENE */
+        .scene {
+            width: 260px;
+            height: 260px;
+            perspective: 1000px;
+            margin-top: 40px;
+        }
+
+        .cube {
+            width: 100%;
+            height: 100%;
+            position: relative;
+            transform-style: preserve-3d;
+            transform: rotateX(60deg) rotateZ(-45deg);
+            transition: transform 0.1s ease-out; /* Smoother mouse tracking */
+        }
+
+        /* BOARDS */
+        .layer {
+            position: absolute;
+            width: 240px;
+            height: 240px;
+            left: 10px; top: 10px;
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            grid-template-rows: repeat(3, 1fr);
+            gap: 4px;
+            padding: 4px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            pointer-events: none; /* Let clicks pass through to cells */
+        }
+
+        .layer:nth-child(1) { transform: translateZ(-100px); }
+        .layer:nth-child(2) { transform: translateZ(0px); }
+        .layer:nth-child(3) { transform: translateZ(100px); }
+
+        /* CELLS */
+        .cell {
+            background: rgba(0, 0, 0, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 35px;
+            cursor: pointer;
+            pointer-events: auto; /* Re-enable clicks */
+            transition: all 0.2s;
+            font-weight: 900;
+        }
+
+        .cell:hover { background: rgba(255, 255, 255, 0.15); }
+
+        .cell.x { color: #00ffff; text-shadow: 0 0 8px #00ffff; }
+        .cell.o { color: #ff00ff; text-shadow: 0 0 8px #ff00ff; }
+        
+        .win-cell { background: rgba(255, 215, 0, 0.5) !important; color: #fff !important; }
+
+        /* CONTROLS */
+        .controls { margin-top: 70px; display: flex; gap: 10px; z-index: 10; }
+
+        button {
+            padding: 10px 24px;
+            font-size: 1rem;
+            cursor: pointer;
+            background: #00ffff;
+            border: none;
+            border-radius: 4px;
+            font-weight: bold;
+            color: #000;
+            transition: background 0.2s;
+        }
+        button:hover { background: #00cccc; }
+        button:disabled { background: #555; color: #888; cursor: not-allowed; }
+
+        .loading { font-size: 0.9rem; color: #ff00ff; display: none; }
+        .loading.active { display: block; animation: blink 1s infinite; }
+
+        @keyframes blink { 50% { opacity: 0.5; } }
+    </style>
+</head>
+<body>
+
+    <h1>3D Tic-Tac-Toe vs AI</h1>
+    
+    <div id="status-bar">
+        <div id="status" class="status-text">Your Turn (X)</div>
+        <div id="ai-status" class="loading">AI Thinking...</div>
+    </div>
+
+    <div class="scene">
+        <div class="cube" id="game-cube">
+            </div>
+    </div>
+
+    <div class="controls">
+        <button id="restart-btn" onclick="startGame()">Restart Game</button>
+    </div>
+
+    <script>
+        /**
+         * CONFIGURATION
+         */
+        const SIZE = 3;
+        const CELLS_COUNT = 27;
+        const MAX_DEPTH = 2; // Depth 2 is standard for JS real-time. Depth 3 may be slow on phones.
+        const SCORES = {
+            WIN: 10000,
+            BLOCK_WIN: 5000,
+            TWO_IN_ROW: 100,
+            CENTER: 50,
+            CORNER: 10
+        };
+
+        let board = []; // 1D array of length 27 for performance
+        let gameActive = true;
+        let playerTurn = true; // true = Human(X), false = AI(O)
+        let winningLines = []; // To store all 76 winning combinations indices
+
+        /**
+         * INITIALIZATION
+         */
+        function initWinningLines() {
+            winningLines = [];
+            
+            // Helper to convert x,y,z to 1D index
+            const idx = (x, y, z) => z * 9 + y * 3 + x;
+
+            // 1. Orthogonal Lines (Rows, Cols, Pillars)
+            for(let z=0; z<3; z++) {
+                for(let y=0; y<3; y++) {
+                    // Rows (x-axis)
+                    winningLines.push([idx(0,y,z), idx(1,y,z), idx(2,y,z)]);
+                }
+                for(let x=0; x<3; x++) {
+                    // Cols (y-axis)
+                    winningLines.push([idx(x,0,z), idx(x,1,z), idx(x,2,z)]);
+                    // Pillars (z-axis)
+                    if(z===0) winningLines.push([idx(x,y,0), idx(x,y,1), idx(x,y,2)]);
+                }
+            }
+
+            // 2. 2D Diagonals on each plane (XY, XZ, YZ)
+            // XY Planes (3 layers)
+            for(let z=0; z<3; z++) {
+                winningLines.push([idx(0,0,z), idx(1,1,z), idx(2,2,z)]);
+                winningLines.push([idx(2,0,z), idx(1,1,z), idx(0,2,z)]);
+            }
+            // XZ Planes (3 slices)
+            for(let y=0; y<3; y++) {
+                winningLines.push([idx(0,y,0), idx(1,y,1), idx(2,y,2)]);
+                winningLines.push([idx(2,y,0), idx(1,y,1), idx(0,y,2)]);
+            }
+            // YZ Planes (3 slices)
+            for(let x=0; x<3; x++) {
+                winningLines.push([idx(x,0,0), idx(x,1,1), idx(x,2,2)]);
+                winningLines.push([idx(x,2,0), idx(x,1,1), idx(x,0,2)]);
+            }
+
+            // 3. Main 3D Diagonals (Corners through center)
+            winningLines.push([idx(0,0,0), idx(1,1,1), idx(2,2,2)]);
+            winningLines.push([idx(2,0,0), idx(1,1,1), idx(0,2,2)]);
+            winningLines.push([idx(0,2,0), idx(1,1,1), idx(2,0,2)]);
+            winningLines.push([idx(2,2,0), idx(1,1,1), idx(0,0,2)]);
+        }
+
+        function createBoardUI() {
+            const cube = document.getElementById('game-cube');
+            cube.innerHTML = '';
+            for(let z=0; z<3; z++) {
+                const layer = document.createElement('div');
+                layer.className = 'layer';
+                for(let y=0; y<3; y++) {
+                    for(let x=0; x<3; x++) {
+                        const cell = document.createElement('div');
+                        cell.className = 'cell';
+                        cell.id = `cell-${z*9 + y*3 + x}`;
+                        cell.onclick = () => handleMove(x, y, z);
+                        layer.appendChild(cell);
+                    }
+                }
+                cube.appendChild(layer);
+            }
+        }
+
+        function startGame() {
+            board = Array(27).fill(null);
+            gameActive = true;
+            playerTurn = true;
+            document.getElementById('status').innerText = "Your Turn (X)";
+            document.getElementById('status').style.color = "#00ffff";
+            document.querySelectorAll('.cell').forEach(c => {
+                c.className = 'cell';
+                c.innerText = '';
+            });
+            if(winningLines.length === 0) initWinningLines();
+        }
+
+        /**
+         * GAMEPLAY LOGIC
+         */
+        function handleMove(x, y, z) {
+            const i = z * 9 + y * 3 + x;
+            if (!gameActive || !playerTurn || board[i] !== null) return;
+
+            // Human Move
+            makeMove(i, 'X');
+            
+            if (checkEndGame('X')) return;
+
+            // Trigger AI
+            playerTurn = false;
+            document.getElementById('status').innerText = "AI Turn...";
+            document.getElementById('status').style.color = "#ff00ff";
+            document.getElementById('ai-status').classList.add('active');
+
+            // Small delay to allow UI to update before heavy calculation
+            setTimeout(() => {
+                const bestMove = getBestMove();
+                makeMove(bestMove, 'O');
+                document.getElementById('ai-status').classList.remove('active');
+                
+                if (!checkEndGame('O')) {
+                    playerTurn = true;
+                    document.getElementById('status').innerText = "Your Turn (X)";
+                    document.getElementById('status').style.color = "#00ffff";
+                }
+            }, 50);
+        }
+
+        function makeMove(index, player) {
+            board[index] = player;
+            const el = document.getElementById(`cell-${index}`);
+            el.innerText = player;
+            el.classList.add(player.toLowerCase());
+        }
+
+        function checkEndGame(player) {
+            const win = checkWin(board, player);
+            if (win) {
+                gameActive = false;
+                document.getElementById('status').innerText = `${player === 'X' ? 'YOU' : 'AI'} WON!`;
+                highlightWin(win);
+                return true;
+            }
+            if (!board.includes(null)) {
+                gameActive = false;
+                document.getElementById('status').innerText = "DRAW!";
+                document.getElementById('status').style.color = "#fff";
+                return true;
+            }
+            return false;
+        }
+
+        function highlightWin(indices) {
+            indices.forEach(i => {
+                document.getElementById(`cell-${i}`).classList.add('win-cell');
+            });
+        }
+
+        function checkWin(currentBoard, player) {
+            for (let line of winningLines) {
+                if (currentBoard[line[0]] === player && 
+                    currentBoard[line[1]] === player && 
+                    currentBoard[line[2]] === player) {
+                    return line;
+                }
+            }
+            return null;
+        }
+
+        /**
+         * AI: MINIMAX + ALPHA BETA PRUNING
+         */
+        function getBestMove() {
+            let bestScore = -Infinity;
+            let move = -1;
+            
+            // Optimization: If center is open (index 13), take it immediately. 
+            // It's overwhelmingly the best move in Qubic.
+            if(board[13] === null) return 13;
+
+            // Get available moves
+            const moves = [];
+            board.forEach((val, idx) => { if(val === null) moves.push(idx); });
+
+            // Sort moves to optimize pruning? 
+            // Simple heuristic: Center > Corners > Edges
+            // (Skipped for code brevity, but helps speed)
+
+            for(let i of moves) {
+                board[i] = 'O';
+                let score = minimax(board, 0, -Infinity, Infinity, false);
+                board[i] = null; // Undo
+                if (score > bestScore) {
+                    bestScore = score;
+                    move = i;
+                }
+            }
+            return move;
+        }
+
+        function minimax(currBoard, depth, alpha, beta, isMaximizing) {
+            // 1. Check Terminal States
+            const winO = isWin(currBoard, 'O');
+            if (winO) return SCORES.WIN - depth; // Prefer faster wins
+
+            const winX = isWin(currBoard, 'X');
+            if (winX) return -SCORES.WIN + depth; // Prefer slower losses
+
+            const availMoves = [];
+            for(let i=0; i<27; i++) if(currBoard[i] === null) availMoves.push(i);
+
+            if (availMoves.length === 0) return 0; // Draw
+            if (depth >= MAX_DEPTH) return evaluateBoard(currBoard); // Depth limit reached
+
+            // 2. Recursive Search
+            if (isMaximizing) {
+                let maxEval = -Infinity;
+                for (let i of availMoves) {
+                    currBoard[i] = 'O';
+                    let eval = minimax(currBoard, depth + 1, alpha, beta, false);
+                    currBoard[i] = null;
+                    maxEval = Math.max(maxEval, eval);
+                    alpha = Math.max(alpha, eval);
+                    if (beta <= alpha) break; // Prune
+                }
+                return maxEval;
+            } else {
+                let minEval = Infinity;
+                for (let i of availMoves) {
+                    currBoard[i] = 'X';
+                    let eval = minimax(currBoard, depth + 1, alpha, beta, true);
+                    currBoard[i] = null;
+                    minEval = Math.min(minEval, eval);
+                    beta = Math.min(beta, eval);
+                    if (beta <= alpha) break; // Prune
+                }
+                return minEval;
+            }
+        }
+
+        // Fast boolean check for win without returning line array
+        function isWin(b, p) {
+            for (let i = 0; i < winningLines.length; i++) {
+                const [a, c, d] = winningLines[i];
+                if (b[a] === p && b[c] === p && b[d] === p) return true;
+            }
+            return false;
+        }
+
+        /**
+         * HEURISTIC EVALUATION
+         * Used when we hit max depth. Returns a score for the board state.
+         */
+        function evaluateBoard(b) {
+            let score = 0;
+
+            for (let line of winningLines) {
+                let oCount = 0;
+                let xCount = 0;
+                
+                // Count pieces in this line
+                for (let idx of line) {
+                    if (b[idx] === 'O') oCount++;
+                    else if (b[idx] === 'X') xCount++;
+                }
+
+                // Scoring Logic
+                if (oCount === 2 && xCount === 0) score += SCORES.TWO_IN_ROW; // AI has 2/3
+                if (oCount === 1 && xCount === 0) score += 10;                // AI has 1/3
+                
+                if (xCount === 2 && oCount === 0) score -= SCORES.BLOCK_WIN;  // Opponent has 2/3 (Danger!)
+                if (xCount === 1 && oCount === 0) score -= 10;
+            }
+
+            // Bonus for center (Index 13 is center of 3x3x3)
+            if (b[13] === 'O') score += SCORES.CENTER;
+            if (b[13] === 'X') score -= SCORES.CENTER;
+
+            return score;
+        }
+
+        // MOUSE ROTATION LOGIC
+        document.addEventListener('mousemove', (e) => {
+            const cube = document.getElementById('game-cube');
+            // Normalize mouse position -1 to 1
+            const x = (e.clientX / window.innerWidth) * 2 - 1;
+            const y = (e.clientY / window.innerHeight) * 2 - 1;
+            
+            // Base: X=60, Z=-45. Move slightly based on mouse
+            cube.style.transform = `rotateX(${60 - y * 15}deg) rotateZ(${-45 + x * 15}deg)`;
+        });
+
+        // Initialize
+        initWinningLines();
+        createBoardUI();
+        startGame();
+
+    </script>
+</body>
+</html>
